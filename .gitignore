@@ -1,0 +1,4 @@
+.codex-build/
+.codex-finalizer/
+.DS_Store
+__pycache__/
