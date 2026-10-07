@@ -1,11 +1,10 @@
 """生成内训幻灯片中使用的图像。
 
-这些图不是手绘示意图，而是对一张合成画面真实执行颜色阈值、形态学、轮廓与质心计算
-之后得到的中间结果，用来在课堂上展示每一步的实际输出。
+这些图不是手绘示意图，而是对一组合成数据真实执行「最小二乘拟合、梯度下降训练、
+多项式拟合」之后得到的结果，用来在课堂上展示每一步的实际输出。
 运行方式：python3 make_figures.py
 """
 
-from collections import deque
 from pathlib import Path
 
 import matplotlib
@@ -13,104 +12,19 @@ import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import rgb_to_hsv
 
 matplotlib.rcParams["font.family"] = ["Hiragino Sans GB"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 
-H, W = 360, 640
 OUT = Path(__file__).resolve().parent
-rng = np.random.default_rng(7)
+rng = np.random.default_rng(11)
 
-YY, XX = np.mgrid[0:H, 0:W].astype(float)
-
-
-def disc(cx, cy, r):
-    return (XX - cx) ** 2 + (YY - cy) ** 2 <= r * r
-
-
-def make_frame():
-    base = np.zeros((H, W, 3), float)
-    base[..., 0] = 0.87 - 0.10 * (XX / W)
-    base[..., 1] = 0.89 - 0.08 * (XX / W)
-    base[..., 2] = 0.91 - 0.05 * (XX / W)
-    frame = base + rng.normal(0, 0.010, (H, W, 3))
-
-    ball = disc(415, 150, 46)
-    d = ((XX - 395) ** 2 + (YY - 130) ** 2) / (95.0 ** 2)
-    shade = np.clip(1.0 - 0.55 * np.sqrt(np.clip(d, 0, 1)), 0.45, 1.0)
-    lit = np.stack([0.85 * shade, 0.17 * shade, 0.14 * shade], -1)
-    frame[ball] = lit[ball]
-
-    frame[disc(115, 258, 32)] = np.array([0.18, 0.36, 0.78])
-
-    # 一个极小的红色碎屑（会被开运算去掉）与一个偏大的同色干扰物（要靠面积筛选去掉）
-    frame[disc(196, 84, 2)] = np.array([0.72, 0.31, 0.28])
-    frame[disc(548, 300, 7)] = np.array([0.72, 0.30, 0.27])
-    return np.clip(frame, 0, 1)
-
-
-def in_range_red(frame, s_min=0.45, v_min=0.32):
-    hsv = rgb_to_hsv(frame)
-    hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    hue_ok = (hue >= 0.93) | (hue <= 0.06)
-    return hue_ok & (sat >= s_min) & (val >= v_min)
-
-
-def _morph(mask, k, op, fill):
-    r = k // 2
-    padded = np.pad(mask, r, mode="constant", constant_values=fill)
-    out = np.full_like(mask, fill, dtype=bool)
-    for dy in range(k):
-        for dx in range(k):
-            out = op(out, padded[dy:dy + H, dx:dx + W])
-    return out
-
-
-def dilate(mask, k=9):
-    return _morph(mask, k, np.maximum, False)
-
-
-def erode(mask, k=9):
-    return _morph(mask, k, np.minimum, True)
-
-
-def component_boxes(mask, min_area=1):
-    seen = np.zeros_like(mask, dtype=bool)
-    boxes = []
-    for y0, x0 in np.argwhere(mask):
-        if seen[y0, x0]:
-            continue
-        queue = deque([(y0, x0)])
-        seen[y0, x0] = True
-        comp = []
-        while queue:
-            y, x = queue.popleft()
-            comp.append((y, x))
-            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                ny, nx = y + dy, x + dx
-                if 0 <= ny < H and 0 <= nx < W and mask[ny, nx] and not seen[ny, nx]:
-                    seen[ny, nx] = True
-                    queue.append((ny, nx))
-        if len(comp) >= min_area:
-            ys = np.array([p[0] for p in comp])
-            xs = np.array([p[1] for p in comp])
-            boxes.append({
-                "area": len(comp),
-                "bbox": (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())),
-                "centroid": (float(xs.mean()), float(ys.mean())),
-            })
-    boxes.sort(key=lambda b: -b["area"])
-    return boxes
-
-
-def clean_axes(ax, title=None):
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_color("#C8CDD4")
-    if title:
-        ax.set_title(title, fontsize=15, color="#1F2A37", pad=10)
+ACCENT = "#285E8E"
+GREEN = "#12B76A"
+RED = "#D92D20"
+ORANGE = "#B54708"
+INK = "#1F2A37"
+MUTED = "#667085"
 
 
 def save(fig, name):
@@ -119,107 +33,162 @@ def save(fig, name):
     print("wrote", name)
 
 
-frame = make_frame()
-mask_raw = in_range_red(frame)
-mask_eroded = erode(mask_raw, 7)
-mask_opened = dilate(mask_eroded, 7)
-boxes_raw = component_boxes(mask_raw)
-boxes_open = component_boxes(mask_opened)
-MIN_AREA = 1000
-target = next(b for b in boxes_open if b["area"] >= MIN_AREA)
+def clean(ax, title=None, xlabel=None, ylabel=None, legend=False):
+    for spine in ax.spines.values():
+        spine.set_color("#C8CDD4")
+    if title:
+        ax.set_title(title, fontsize=15, color=INK, pad=10)
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=13, color=MUTED)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=13, color=MUTED)
+    ax.tick_params(labelsize=11, colors=MUTED)
+    if legend:
+        leg = ax.legend(fontsize=12, frameon=False)
+        for text in leg.get_texts():
+            text.set_color(MUTED)
 
 
-# 1) 图像就是矩阵
-fig, ax = plt.subplots(figsize=(9.0, 5.4))
-ax.imshow(frame)
-ax.set_xlim(-8, W + 8)
-ax.set_ylim(H + 8, -8)
-clean_axes(ax)
-ax.annotate("", xy=(W - 40, H - 22), xytext=(40, H - 22),
-            arrowprops=dict(arrowstyle="<->", color="#285E8E", lw=1.7))
-ax.text(W / 2, H - 32, "宽度 W = 640 像素", ha="center", va="bottom", fontsize=14, color="#285E8E")
-ax.annotate("", xy=(26, H - 70), xytext=(26, 70),
-            arrowprops=dict(arrowstyle="<->", color="#285E8E", lw=1.7))
-ax.text(38, H / 2, "高度 H = 360", ha="center", va="center", fontsize=14,
-        color="#285E8E", rotation=90)
-ax.add_patch(plt.Rectangle((408, 143), 14, 14, fill=False, ec="#111827", lw=2.2))
-ax.annotate("一个像素 = 3 个数 (B, G, R)",
-            xy=(406, 146), xytext=(300, 26), fontsize=14, color="#111827",
-            ha="left", arrowprops=dict(arrowstyle="-", color="#111827", lw=1.2))
-save(fig, "fig_frame_matrix.png")
+# ---------------------------------------------------------------- 数据
+# 一台小车的电机标定数据：给一个 PWM 指令，量一次实际速度
+PWM = np.linspace(1000.0, 2000.0, 18)
+SPEED_TRUE = 0.40 * (PWM - 1000.0) + 30.0
+SPEED = SPEED_TRUE + rng.normal(0.0, 12.0, PWM.size)
+
+W_FIT, B_FIT = np.polyfit(PWM, SPEED, 1)
+B_CENTER = W_FIT * 1500.0 + B_FIT          # 写成以 1500 为中心的截距，便于阅读
+SPEED_PRED = W_FIT * PWM + B_FIT
+MSE = float(np.mean((SPEED_PRED - SPEED) ** 2))
+
+print("标定数据（PWM, 实测速度 mm/s）：")
+for p, s in zip(PWM, SPEED):
+    print(f"  {p:.0f}  {s:6.1f}")
+print(f"最小二乘拟合：斜率 {W_FIT:.4f}，中心截距 {B_CENTER:.1f}，MSE {MSE:.1f}")
 
 
-# 2) HSV 三个通道
-hsv = rgb_to_hsv(frame)
-fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.0))
-for ax, data, name in zip(axes, [hsv[..., 0], hsv[..., 1], hsv[..., 2]],
-                          ["H 色调（是什么颜色）", "S 饱和度（颜色有多纯）", "V 明度（有多亮）"]):
-    ax.imshow(data, cmap="gray", vmin=0, vmax=1)
-    clean_axes(ax, name)
-fig.subplots_adjust(wspace=0.12)
-save(fig, "fig_hsv_channels.png")
+# ---------------------------------------------------------------- 1 散点与拟合直线
+fig, ax = plt.subplots(figsize=(9.0, 4.6))
+ax.scatter(PWM, SPEED, s=46, color=ACCENT, zorder=3, label="实测样本")
+xs = np.linspace(1000, 2000, 200)
+ax.plot(xs, W_FIT * xs + B_FIT, color=RED, lw=2.4, zorder=2, label="拟合直线")
+ax.set_xlim(960, 2040)
+ax.set_ylim(0, 480)
+clean(ax, None, "PWM 指令", "实测速度 (mm/s)", legend=True)
+ax.text(1005, 410, f"预测速度 = {W_FIT:.3f} × (PWM - 1500) + {B_CENTER:.1f}", fontsize=15, color=RED)
+save(fig, "fig_scatter_line.png")
 
 
-# 3) 阈值分割
-fig, axes = plt.subplots(1, 2, figsize=(10.0, 3.4))
-axes[0].imshow(frame)
-clean_axes(axes[0], "① 摄像头拍到的一帧")
-axes[1].imshow(mask_raw, cmap="gray")
-clean_axes(axes[1], "② 红色阈值分割后的掩膜")
-fig.subplots_adjust(wspace=0.1)
-save(fig, "fig_mask.png")
+# ---------------------------------------------------------------- 2 误差与 MSE
+fig, ax = plt.subplots(figsize=(9.0, 4.6))
+for x0, y0, y1 in zip(PWM, SPEED, SPEED_PRED):
+    ax.plot([x0, x0], [y0, y1], color="#98A2B3", lw=1.2, zorder=1)
+ax.scatter(PWM, SPEED, s=46, color=ACCENT, zorder=3, label="实测值")
+ax.plot(xs, W_FIT * xs + B_FIT, color=RED, lw=2.4, zorder=2, label="模型预测值")
+ax.set_xlim(960, 2040)
+ax.set_ylim(0, 480)
+clean(ax, None, "PWM 指令", "实测速度 (mm/s)", legend=True)
+ax.text(1005, 410, f"均方误差 MSE = {MSE:.1f}\n（每一段竖线的长度就是一个误差）",
+        fontsize=15, color=INK)
+save(fig, "fig_error.png")
 
 
-# 4) 形态学去噪
-fig, axes = plt.subplots(1, 3, figsize=(11.0, 3.1))
-for ax, data, name in zip(axes, [mask_raw, mask_eroded, mask_opened],
-                          ["原掩膜：目标 + 两处杂点", "腐蚀：小杂点消失", "再膨胀：目标恢复"]):
-    ax.imshow(data, cmap="gray")
-    clean_axes(ax, name)
-fig.subplots_adjust(wspace=0.1)
-save(fig, "fig_morphology.png")
+# ---------------------------------------------------------------- 3 梯度下降
+# 互动用图：两组候选参数，让学生先猜哪一组的 MSE 更小
+W_A, B_A = 0.20, 120.0
+W_B, B_B = float(W_FIT), float(B_CENTER)
+MSE_A = float(np.mean((W_A * (PWM - 1500.0) + B_A - SPEED) ** 2))
+MSE_B = float(np.mean((W_B * (PWM - 1500.0) + B_B - SPEED) ** 2))
+
+fig, ax = plt.subplots(figsize=(9.0, 4.6))
+ax.scatter(PWM, SPEED, s=46, color=ACCENT, zorder=3, label="实测样本")
+ax.plot(xs, W_A * (xs - 1500.0) + B_A, color=ORANGE, lw=2.4, zorder=2,
+        label=f"A：w = {W_A:.2f}, b = {B_A:.0f}")
+ax.plot(xs, W_B * (xs - 1500.0) + B_B, color=GREEN, lw=2.4, zorder=2,
+        label=f"B：w = {W_B:.2f}, b = {B_B:.0f}")
+ax.set_xlim(960, 2040)
+ax.set_ylim(0, 480)
+clean(ax, None, "PWM 指令", "实测速度 (mm/s)", legend=True)
+save(fig, "fig_two_lines.png")
+print(f"候选参数 A 的 MSE {MSE_A:.1f}，B 的 MSE {MSE_B:.1f}")
 
 
-# 5) 轮廓与面积筛选
-fig, axes = plt.subplots(1, 2, figsize=(10.0, 3.4))
-axes[0].imshow(mask_opened, cmap="gray")
-clean_axes(axes[0], "去噪后的掩膜")
-axes[1].imshow(frame)
-for box in boxes_open:
-    x0, y0, x1, y1 = box["bbox"]
-    keep = box["area"] >= MIN_AREA
-    color = "#12B76A" if keep else "#D92D20"
-    axes[1].add_patch(plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec=color, lw=2.2))
-    axes[1].text(x0, y0 - 10, f"{box['area']} px", fontsize=13, color=color)
-clean_axes(axes[1], "面积筛选：只保留大目标")
-fig.subplots_adjust(wspace=0.1)
-save(fig, "fig_contours.png")
+# ---------------------------------------------------------------- 4 梯度下降
+# 为了把曲线画清楚，先把特征归一化到 [-1, 1]，并固定 b 只调 w
+X_NORM = (PWM - 1500.0) / 500.0
+B_STAR = float(SPEED.mean())
+W_STAR = float(np.sum(X_NORM * (SPEED - B_STAR)) / np.sum(X_NORM ** 2))
+CURVATURE = 2.0 * float(np.mean(X_NORM ** 2))
 
 
-# 6) 目标中心与水平偏差
-cx, cy = target["centroid"]
-fig, ax = plt.subplots(figsize=(9.0, 5.4))
-ax.imshow(frame)
-ax.set_xlim(-8, W + 8)
-ax.set_ylim(H + 8, -8)
-x0, y0, x1, y1 = target["bbox"]
-ax.add_patch(plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec="#12B76A", lw=2.0))
-ax.plot([cx], [cy], marker="+", ms=22, mew=3.5, color="#F79009")
-ax.axvline(W / 2, color="#285E8E", ls="--", lw=1.8)
-ax.annotate("", xy=(cx, 336), xytext=(W / 2, 336),
-            arrowprops=dict(arrowstyle="<->", color="#D92D20", lw=2.2))
-ax.text((cx + W / 2) / 2, 348, "水平偏差 = 目标横坐标 - 画面中心横坐标",
-        ha="center", va="top", fontsize=14, color="#D92D20")
-ax.annotate("目标中心 (x_target, y_target)", xy=(cx + 8, cy - 8), xytext=(474, 62),
-            fontsize=14, color="#B54708",
-            arrowprops=dict(arrowstyle="-", color="#B54708", lw=1.2))
-ax.text(W / 2 - 14, 316, "画面中心 x_center", fontsize=14, color="#285E8E", ha="right")
-clean_axes(ax)
-save(fig, "fig_center_error.png")
+def loss(w):
+    w = np.asarray(w, dtype=float)
+    return np.mean((w[..., None] * X_NORM + B_STAR - SPEED) ** 2, axis=-1)
 
 
-print()
-print("阈值分割后检测到的轮廓（面积从大到小）：")
-for b in boxes_raw:
-    print(f"  面积 {b['area']:>6} px   外接框 {b['bbox']}")
-print(f"面积筛选后保留目标：面积 {target['area']} px，质心 ({cx:.1f}, {cy:.1f})")
+def descend(eta, steps, start=120.0):
+    path = [start]
+    for _ in range(steps):
+        path.append(path[-1] - eta * CURVATURE * (path[-1] - W_STAR))
+    return np.array(path)
+
+
+GRID = np.linspace(20.0, 360.0, 400)
+CURVE = loss(GRID)
+
+path_mid = descend(0.5, 8, start=40.0)
+fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.2))
+axes[0].plot(GRID, CURVE, color=ACCENT, lw=2.2)
+axes[0].plot(path_mid, loss(path_mid), "o-", color=RED, ms=6, lw=1.4, zorder=3)
+axes[0].annotate("起点", xy=(path_mid[0], loss(path_mid[0])), xytext=(path_mid[0] + 30, loss(path_mid[0]) + 900),
+                 fontsize=13, color=RED)
+axes[0].annotate("最低点", xy=(W_STAR, loss(W_STAR)), xytext=(W_STAR + 12, loss(W_STAR) + 2200),
+                 fontsize=13, color=GREEN)
+clean(axes[0], "损失随参数 w 变化", "参数 w", "损失 L")
+axes[1].plot(np.arange(path_mid.size), loss(path_mid), "o-", color=RED, ms=6, lw=1.8)
+clean(axes[1], "损失随迭代次数下降", "迭代次数", "损失 L")
+save(fig, "fig_gradient_descent.png")
+
+
+# ---------------------------------------------------------------- 4 学习率
+settings = [
+    (0.05, "η = 0.05 · 收敛很慢", RED),
+    (0.80, "η = 0.80 · 几步到位", GREEN),
+    (3.20, "η = 3.20 · 震荡发散", RED),
+]
+fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.9))
+for ax, (eta, title, color) in zip(axes, settings):
+    path = descend(eta, 8)
+    ax.plot(GRID, CURVE, color="#C7D9EA", lw=2.0)
+    inside = (path >= 20.0) & (path <= 360.0)
+    ax.plot(path[inside], loss(path[inside]), "o-", color=color, ms=6, lw=1.4, zorder=3)
+    ax.set_xlim(20, 360)
+    ax.set_ylim(0, 2600)
+    clean(ax, title, "参数 w", "损失 L")
+fig.subplots_adjust(wspace=0.26)
+save(fig, "fig_learning_rate.png")
+
+
+# ---------------------------------------------------------------- 5 过拟合与欠拟合
+x_train = np.sort(rng.uniform(-1.0, 1.0, 14))
+def target(x):
+    return 0.62 * np.sin(3.0 * x)
+
+y_train = target(x_train) + rng.normal(0.0, 0.09, x_train.size)
+x_val = np.linspace(-1.0, 1.0, 60)
+y_val = target(x_val) + rng.normal(0.0, 0.09, x_val.size)
+curve_x = np.linspace(-1.05, 1.05, 300)
+
+panels = [(1, "1 次多项式：欠拟合"), (3, "3 次多项式：合适"), (9, "9 次多项式：过拟合")]
+fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.9))
+for ax, (degree, title) in zip(axes, panels):
+    coeffs = np.polyfit(x_train, y_train, degree)
+    train_err = float(np.mean((np.polyval(coeffs, x_train) - y_train) ** 2))
+    val_err = float(np.mean((np.polyval(coeffs, x_val) - y_val) ** 2))
+    ax.plot(curve_x, np.polyval(coeffs, curve_x), color=ACCENT, lw=2.2, zorder=2)
+    ax.scatter(x_train, y_train, s=34, color=RED, zorder=3, label="训练样本")
+    ax.set_ylim(-1.6, 1.6)
+    ax.set_xlim(-1.15, 1.15)
+    clean(ax, title, "输入特征 x", "输出 y")
+    ax.text(-1.05, -1.42, f"训练误差 {train_err:.3f}\n验证误差 {val_err:.3f}", fontsize=12, color=MUTED)
+fig.subplots_adjust(wspace=0.26)
+save(fig, "fig_overfit.png")
