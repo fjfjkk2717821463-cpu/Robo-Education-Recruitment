@@ -1,8 +1,14 @@
-"""生成内训幻灯片中使用的图像。
+"""生成内训幻灯片中使用的图像与数据文件。
 
 这些图不是手绘示意图，而是对一组合成数据真实执行「最小二乘拟合、梯度下降训练、
 多项式拟合」之后得到的结果，用来在课堂上展示每一步的实际输出。
 运行方式：python3 make_figures.py
+输出：fig_*.png 六张配图，以及发给学员的 pwm_speed.csv。
+
+关于损失的曲率，注意区分两个量（讲义 §二第 4 节用的是同一组记号）：
+  损失的二阶导  c = 2/N · Σxᵢ²            （决定更新式里的收敛条件 0 < ηc < 2）
+  写成顶点式      L(w) = L_min + c/2 · (w − w*)²
+即 c 是二阶导，二次项系数是 c/2。两者不要混用，否则会差一个 2 倍。
 """
 
 from pathlib import Path
@@ -65,6 +71,14 @@ for p, s in zip(PWM, SPEED):
     print(f"  {p:.0f}  {s:6.1f}")
 print(f"最小二乘拟合：斜率 {W_FIT:.4f}，中心截距 {B_CENTER:.1f}，MSE {MSE:.1f}")
 
+# 导出给学员的数据文件：与幻灯片第 7 页、讲义「关键数字一览」同源
+with (OUT / "pwm_speed.csv").open("w", encoding="utf-8", newline="") as handle:
+    handle.write("pwm,speed_mm_s\n")
+    for p, s in zip(PWM, SPEED):
+        # 两列都保留足够小数：直接读这个文件能复现 MSE = 92.648，不会因为四舍五入漂移
+        handle.write(f"{p:.4f},{s:.6f}\n")
+print("wrote pwm_speed.csv")
+
 
 # ---------------------------------------------------------------- 1 散点与拟合直线
 fig, ax = plt.subplots(figsize=(9.0, 4.6))
@@ -117,7 +131,8 @@ print(f"候选参数 A 的 MSE {MSE_A:.1f}，B 的 MSE {MSE_B:.1f}")
 X_NORM = (PWM - 1500.0) / 500.0
 B_STAR = float(SPEED.mean())
 W_STAR = float(np.sum(X_NORM * (SPEED - B_STAR)) / np.sum(X_NORM ** 2))
-CURVATURE = 2.0 * float(np.mean(X_NORM ** 2))
+MEAN_X2 = float(np.mean(X_NORM ** 2))
+HESSIAN = 2.0 * MEAN_X2          # c：损失对 w 的二阶导，收敛条件用 2/c
 
 
 def loss(w):
@@ -128,12 +143,17 @@ def loss(w):
 def descend(eta, steps, start=120.0):
     path = [start]
     for _ in range(steps):
-        path.append(path[-1] - eta * CURVATURE * (path[-1] - W_STAR))
+        path.append(path[-1] - eta * HESSIAN * (path[-1] - W_STAR))
     return np.array(path)
 
 
 GRID = np.linspace(20.0, 360.0, 400)
 CURVE = loss(GRID)
+L_MIN = float(loss(W_STAR))
+
+print(f"归一化 x = (PWM - 1500) / 500：mean(x²) = {MEAN_X2:.4f}，"
+      f"曲率 c = 2·mean(x²) = {HESSIAN:.4f}，η 的上界 2 / c = {2 / HESSIAN:.2f}")
+print(f"固定 b = mean(速度) = {B_STAR:.2f} 时，最优 w* = {W_STAR:.2f}，损失下界 {L_MIN:.1f}")
 
 path_mid = descend(0.5, 8, start=40.0)
 fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.2))
@@ -153,17 +173,28 @@ save(fig, "fig_gradient_descent.png")
 settings = [
     (0.05, "η = 0.05 · 收敛很慢", RED),
     (0.80, "η = 0.80 · 几步到位", GREEN),
-    (3.20, "η = 3.20 · 震荡发散", RED),
+    (3.20, "η = 3.20 · 越过边界，发散", RED),
 ]
-fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.9))
+fig, axes = plt.subplots(1, 3, figsize=(11.0, 3.9))
 for ax, (eta, title, color) in zip(axes, settings):
     path = descend(eta, 8)
-    ax.plot(GRID, CURVE, color="#C7D9EA", lw=2.0)
-    inside = (path >= 20.0) & (path <= 360.0)
-    ax.plot(path[inside], loss(path[inside]), "o-", color=color, ms=6, lw=1.4, zorder=3)
-    ax.set_xlim(20, 360)
-    ax.set_ylim(0, 2600)
-    clean(ax, title, "参数 w", "损失 L")
+    steps = np.arange(path.size)
+    losses = loss(path)
+    # 纵轴取对数：否则发散时后面的点会飞出画面，看起来只有一个点
+    ax.plot(steps, losses, "o-", color=color, ms=6, lw=1.6, zorder=3)
+    ax.axhline(L_MIN, color="#C8CDD4", ls="--", lw=1.2, zorder=1)
+    ax.set_yscale("log")
+    ax.set_xlim(-0.3, 8.3)
+    ax.set_ylim(50.0, 2.0e6)
+    ax.set_xticks([0, 2, 4, 6, 8])
+    clean(ax, title, "迭代次数", "损失 L（对数）")
+    if eta > 2.0:
+        ax.text(0.04, 0.98,
+                "参数 w 在最低点两侧来回跳：\n" + " → ".join(f"{w:.0f}" for w in path[:4]) + " → …",
+                transform=ax.transAxes, fontsize=12, color=color, va="top", linespacing=1.5)
+axes[1].annotate("最低点 92.6", xy=(8, L_MIN), xytext=(3.6, 420.0),
+                 fontsize=13, color=GREEN,
+                 arrowprops={"arrowstyle": "-", "color": GREEN, "lw": 1.0})
 fig.subplots_adjust(wspace=0.26)
 save(fig, "fig_learning_rate.png")
 
